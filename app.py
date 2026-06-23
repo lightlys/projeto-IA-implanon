@@ -6,7 +6,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 
-# configuração visual da página do Streamlit
+# Configuração visual da página do Streamlit
 st.set_page_config(
     page_title="Assistente Virtual - SUS Canoinhas", 
     page_icon="🩺", 
@@ -23,11 +23,16 @@ st.info(
     "**📌 Escopo de Resposta:** Minhas respostas são baseadas **estritamente** no documento oficial do município para garantir total segurança e evitar informações incorretas."
 )
 
-# chave API gerada pelo Grok
+# chave API gerada pelo Groq
 CHAVE_PADRAO = ""
 
-# verifica se há chave no sistema, se não, usa a colada acima
+# verifica se há chave no sistema, se não, usa a padrão
 api_key = os.getenv("GROQ_API_KEY", CHAVE_PADRAO)
+
+# validação imediata da existência da Chave API antes de prosseguir
+if not api_key:
+    st.error("🔑 Chave API da Groq não configurada! Por favor, configure a variável de ambiente `GROQ_API_KEY` ou insira-a no código.")
+    st.stop()
 
 PDF_PATH = "Protocolo - Inserção de Implante Contraceptivo Subdérmico de Etonogestrel - Implanon.pdf"
 
@@ -45,7 +50,7 @@ def inicializar_base_conhecimento(caminho_pdf):
         # --- DIAGNÓSTICO DO PDF ---
         texto_extraido_total = "".join([p.page_content for p in paginas]).strip()
         if not texto_extraido_total:
-            st.error("⚠️ ATENÇÃO: O PDF foi lido, mas nenhum texto foi extraído!")
+            st.error("⚠️ ATENÇÃO: O PDF foi lido, mas nenhum texto foi extraído! O arquivo pode ser composto apenas por imagens.")
             return None, None
         else:
             st.success(f"✅ PDF carregado! {len(paginas)} páginas encontradas. Caracteres lidos: {len(texto_extraido_total)}")
@@ -68,6 +73,12 @@ def inicializar_base_conhecimento(caminho_pdf):
 # Inicializa as duas estruturas de busca do PDF
 retriever, lista_paginas_pdf = inicializar_base_conhecimento(PDF_PATH)
 
+llm = ChatGroq(
+    model="llama-3.1-8b-instant", 
+    groq_api_key=api_key, 
+    temperature=0.0
+)
+
 if retriever and lista_paginas_pdf:
     # Gerenciamento do histórico do chat
     if "mensagens" not in st.session_state:
@@ -86,13 +97,6 @@ if retriever and lista_paginas_pdf:
         with st.chat_message("assistant"):
             with st.spinner("Consultando o Protocolo Municipal..."):
                 try:
-                    # Inicializa o cliente LLM garantindo o envio correto da chave api_key
-                    llm = ChatGroq(
-                        model="llama-3.1-8b-instant", 
-                        groq_api_key=api_key, 
-                        temperature=0.0
-                    )
-
                     # TENTATIVA 1: Busca Semântica Padrão (FAISS)
                     trechos_encontrados = retriever.invoke(pergunta_usuario)
                     contexto = "\n\n".join([doc.page_content for doc in trechos_encontrados])
@@ -113,16 +117,20 @@ if retriever and lista_paginas_pdf:
                     response = llm.invoke(prompt_faiss)
                     resposta_final = response.content
 
-                    # TENTATIVA 2 (PLANO B): Filtro inteligente por correspondência de strings (Evita Erro 413)
+                    # TENTATIVA 2 (PLANO B): Filtro inteligente por correspondência de strings
                     if "NÃO_ENCONTRADO" in resposta_final or len(resposta_final.strip()) < 15:
                         with st.info("Filtrando e analisando páginas relevantes do protocolo..."):
                             
+                            # Termos expandidos dinamicamente baseados na pergunta do usuário
                             termos_busca = ["idade", "anos", "critério", "elegibilidade", "adolescente", "público", "mulher", "faixa"]
+                            palavras_usuario = [p.lower() for p in pergunta_usuario.split() if len(p) > 4]
+                            termos_busca.extend(palavras_usuario)
+                            
                             paginas_filtradas = []
                             
                             for idx, pagina in enumerate(lista_paginas_pdf):
                                 conteudo = pagina.page_content.lower()
-                                if any(termo in conteudo for termo in termos_busca) or any(palavra.lower() in conteudo for palavra in pergunta_usuario.split() if len(palavra) > 4):
+                                if any(termo in conteudo for termo in termos_busca):
                                     paginas_filtradas.append(f"[Página {idx+1}]\n{pagina.page_content}")
                             
                             # Une no máximo 3 páginas para ficar totalmente seguro contra limites de tokens
@@ -143,4 +151,4 @@ if retriever and lista_paginas_pdf:
                     st.session_state.mensagens.append({"role": "assistant", "content": resposta_final})
                     
                 except Exception as e:
-                    st.error(f"Ocorreu um erro na comunicação com a API da Groq: {e}")
+                    st.error(f"Ocorreu um erro no processamento: {e}")
